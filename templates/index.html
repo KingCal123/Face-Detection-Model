@@ -1951,6 +1951,14 @@
     // RENDER DETECTION RESULTS
     // ========================================================
     function renderResults(data) {
+      // 0. Update Online Indicator
+      const led = document.getElementById('statusLed');
+      const label = document.getElementById('statusLabel');
+      if (led && label) {
+        led.className = 'status-led online';
+        label.textContent = `ONLINE (${data.cloud_latency_ms}ms)`;
+      }
+
       // 1. Verification Banner
       const banner = document.getElementById('statusBanner');
       const bannerTitle = document.getElementById('bannerTitle');

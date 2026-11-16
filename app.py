@@ -91,20 +91,22 @@ def call_ultralytics_cloud(image_bytes: bytes, filename: str, api_key: str, conf
 def create_biometric_overlay(pil_img: Image.Image, detections: list):
     """
     Draws high-tech cyan/teal biometric reticles and identity labels on the image.
+    Face area remains 100% visible and un-obscured (NO solid fills over faces).
     Returns: (annotated_base64_data_url, list_of_face_crops_with_metadata)
     """
-    # Work on a copy in RGBA for crisp alpha-blending
-    annotated = pil_img.convert("RGBA")
+    annotated = pil_img.copy().convert("RGB")
     draw = ImageDraw.Draw(annotated)
     w, h = annotated.size
     
-    # Try loading a readable font, fallback to default
+    # Adaptive scalable font
+    font_size = max(13, int(min(w, h) * 0.026))
     try:
-        font_large = ImageFont.truetype("arial.ttf", max(16, int(w * 0.026)))
-        font_small = ImageFont.truetype("arial.ttf", max(12, int(w * 0.019)))
+        font = ImageFont.load_default(size=font_size)
     except Exception:
-        font_large = ImageFont.load_default()
-        font_small = ImageFont.load_default()
+        try:
+            font = ImageFont.truetype("arial.ttf", font_size)
+        except Exception:
+            font = ImageFont.load_default()
         
     crops = []
     
@@ -125,20 +127,15 @@ def create_biometric_overlay(pil_img: Image.Image, detections: list):
         is_target = TARGET_IDENTITY.lower() in name.lower()
         
         # Color definitions: Laser Cyan & Electric Teal
-        # Caleb = Electric Cyan (#06B6D4), other = Bright Amber / Mint
-        primary_color = (6, 182, 212, 255) if is_target else (45, 212, 191, 255)
-        accent_color = (45, 212, 191, 255)
-        glow_fill = (6, 182, 212, 35) if is_target else (45, 212, 191, 25)
+        primary_color = (6, 182, 212) if is_target else (45, 212, 191)
+        accent_color = (34, 211, 238)
         
-        # 1. Subtle semi-transparent inner tint
-        draw.rectangle([x1, y1, x2, y2], fill=glow_fill)
+        # 1. Thin bounding box perimeter (NO inner fill so face is 100% natural & visible)
+        draw.rectangle([x1, y1, x2, y2], fill=None, outline=primary_color, width=1)
         
-        # 2. Thin bounding box border
-        draw.rectangle([x1, y1, x2, y2], outline=(primary_color[0], primary_color[1], primary_color[2], 120), width=1)
-        
-        # 3. Biometric Corner Reticles (Tactical brackets on 4 corners)
-        corner_len = max(8, int(min(bw, bh) * 0.22))
-        corner_width = max(2, int(w * 0.004))
+        # 2. Biometric Corner Reticles (tactical L-brackets on 4 corners)
+        corner_len = max(10, int(min(bw, bh) * 0.18))
+        corner_width = max(2, int(min(w, h) * 0.004))
         
         # Top-Left
         draw.line([(x1, y1), (x1 + corner_len, y1)], fill=primary_color, width=corner_width)
@@ -156,37 +153,52 @@ def create_biometric_overlay(pil_img: Image.Image, detections: list):
         draw.line([(x2, y2), (x2 - corner_len, y2)], fill=primary_color, width=corner_width)
         draw.line([(x2, y2), (x2, y2 - corner_len)], fill=primary_color, width=corner_width)
         
-        # 4. Center Micro-Crosshair
+        # 3. Center Micro-Crosshair
         cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-        ch_size = max(4, int(min(bw, bh) * 0.06))
+        ch_size = max(4, int(min(bw, bh) * 0.05))
         draw.line([(cx - ch_size, cy), (cx + ch_size, cy)], fill=accent_color, width=1)
         draw.line([(cx, cy - ch_size), (cx, cy + ch_size)], fill=accent_color, width=1)
         
-        # 5. High-Tech Badge on top of box
-        label_text = f"● {name.upper()}" if is_target else f"● {name}"
-        score_text = f"{conf * 100:.1f}% MATCH"
+        # 4. Compact, proportional Badge that fits the text snugly without obstructing
+        label_text = f"● {name.upper()} · {conf * 100:.1f}%"
+        try:
+            tb = draw.textbbox((0, 0), label_text, font=font)
+            tw = tb[2] - tb[0]
+            th = tb[3] - tb[1]
+            offset_y = tb[1]
+        except Exception:
+            tw, th = len(label_text) * 8, 14
+            offset_y = 0
+            
+        pad_x = 7
+        pad_y = 4
+        badge_w = tw + (pad_x * 2)
+        badge_h = th + (pad_y * 2)
         
-        # Badge background
-        badge_h = max(22, int(bh * 0.18))
-        badge_w = max(110, int(bw * 0.85))
-        badge_y = max(0, y1 - badge_h - 4)
+        # Place neatly above box if space permits, else inside top edge
+        if y1 >= badge_h + 6:
+            bx1 = x1
+            by1 = y1 - badge_h - 4
+        else:
+            bx1 = x1 + 4
+            by1 = y1 + 4
+            
+        bx2 = bx1 + badge_w
+        by2 = by1 + badge_h
         
-        draw.rectangle([x1, badge_y, x1 + badge_w, badge_y + badge_h], fill=(6, 16, 23, 230))
-        draw.rectangle([x1, badge_y, x1 + badge_w, badge_y + badge_h], outline=primary_color, width=1)
+        draw.rectangle([bx1, by1, bx2, by2], fill=(6, 16, 23), outline=primary_color, width=1)
+        draw.text((bx1 + pad_x, by1 + pad_y - offset_y), label_text, fill=accent_color, font=font)
         
-        # Draw texts
-        draw.text((x1 + 6, badge_y + 3), f"{label_text} | {score_text}", fill=primary_color, font=font_small)
-        
-        # 6. Extract Face Crop with padding for the biometric gallery
-        pad_x = bw * 0.15
-        pad_y = bh * 0.20
-        crop_x1 = max(0, int(x1 - pad_x))
-        crop_y1 = max(0, int(y1 - pad_y))
-        crop_x2 = min(w, int(x2 + pad_x))
-        crop_y2 = min(h, int(y2 + pad_y))
+        # 5. Extract Face Crop with proportional padding for the gallery
+        pad_x_crop = bw * 0.15
+        pad_y_crop = bh * 0.20
+        crop_x1 = max(0, int(x1 - pad_x_crop))
+        crop_y1 = max(0, int(y1 - pad_y_crop))
+        crop_x2 = min(w, int(x2 + pad_x_crop))
+        crop_y2 = min(h, int(y2 + pad_y_crop))
         
         face_crop = pil_img.crop((crop_x1, crop_y1, crop_x2, crop_y2))
-        # Resize thumbnail to square 180x180
+        # Resize thumbnail to square 200x200
         thumb_io = io.BytesIO()
         face_crop.resize((200, 200), Image.Resampling.LANCZOS).convert("RGB").save(thumb_io, format='JPEG', quality=90)
         crop_b64 = "data:image/jpeg;base64," + base64.b64encode(thumb_io.getvalue()).decode('utf-8')
@@ -226,7 +238,7 @@ def get_status():
     t0 = time.time()
     try:
         req = urllib.request.Request(HEALTH_ENDPOINT, headers={'User-Agent': 'NeuraFace-Client/1.0'})
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with urllib.request.urlopen(req, timeout=12) as resp:
             data = json.loads(resp.read().decode('utf-8'))
             ms = round((time.time() - t0) * 1000, 1)
             return jsonify({
@@ -337,7 +349,6 @@ def predict():
         }), status_code
 
     # 6. Parse Ultralytics Prediction Response
-    # Format expected: {"images": [{"shape": [...], "results": [{"name": "Caleb", "confidence": 0.92, "box": {...}}]}]}
     detections = []
     try:
         images_arr = result_data.get('images', [])
@@ -360,7 +371,6 @@ def predict():
     
     # 8. Check if Caleb is identified
     caleb_detected = any(c['is_caleb'] for c in face_crops)
-    caleb_matches = [c for c in face_crops if c['is_caleb']]
     highest_conf = max([c['confidence_pct'] for c in face_crops], default=0.0)
 
     return jsonify({
@@ -379,12 +389,9 @@ def predict():
 
 
 if __name__ == '__main__':
-    # Local dev server
     port = int(os.environ.get('PORT', 5000))
     print(f"==================================================")
     print(f" NeuraFace AI Engine — Caleb Biometric System")
-    print(f" Palette: Option 5 (Bioluminescent Cyan & Deep Teal)")
-    print(f" Endpoint: {DEFAULT_ENDPOINT}")
     print(f" Running at: http://127.0.0.1:{port}")
     print(f"==================================================")
     app.run(host='0.0.0.0', port=port, debug=True)
