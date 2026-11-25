@@ -1564,7 +1564,7 @@
   </main>
 
   <!-- ========================================================
-       MODAL: API KEY CONFIGURATION
+       MODAL: MODEL & API KEY CONFIGURATION
        ======================================================== -->
   <div class="modal-backdrop" id="keyModal" onclick="closeModalOnBackdrop(event, 'keyModal')">
     <div class="modal-card">
@@ -1574,11 +1574,42 @@
             <path d="M21 2l-2 2m-1.5 1.5L14 9l-1.5-1.5M3 21l6.5-6.5"/>
             <circle cx="7.5" cy="16.5" r="4.5"/>
           </svg>
-          ULTRALYTICS API KEY CONFIG
+          MODEL & API KEY CONFIG
         </div>
         <button class="btn-close-modal" onclick="closeKeyModal()">&times;</button>
       </div>
 
+      <!-- Mode Selector Tabs: Default Caleb vs Custom Classmate -->
+      <div class="tab-nav" style="margin-bottom: 2px;">
+        <button class="tab-btn active" id="modalTabDefault" type="button" onclick="setModalMode('default')">
+          ● CALEB AI (DEFAULT)
+        </button>
+        <button class="tab-btn" id="modalTabCustom" type="button" onclick="setModalMode('custom')">
+          CUSTOM MODEL
+        </button>
+      </div>
+
+      <!-- Default preset notice -->
+      <div id="defaultModelNotice" style="font-size: 0.74rem; color: var(--text-muted); font-family: var(--font-mono); padding: 8px 12px; background: rgba(6, 182, 212, 0.06); border: 1px solid var(--border); border-radius: 6px;">
+        PRESET: Dedicated Cloud Run (calfacedetect) // TARGET: Caleb
+      </div>
+
+      <!-- Custom model inputs (Hidden in default mode) -->
+      <div id="customModelGroup" style="display: none; flex-direction: column; gap: 12px;">
+        <div class="input-field-group">
+          <label class="input-field-label" for="modalEndpointInput">CUSTOM ENDPOINT URL</label>
+          <input type="url" id="modalEndpointInput" class="text-input" placeholder="https://predict-xxx.a.run.app/predict">
+          <p class="help-hint">Paste your dedicated Ultralytics Cloud Run inference link.</p>
+        </div>
+
+        <div class="input-field-group">
+          <label class="input-field-label" for="modalTargetInput">TARGET IDENTITY / NAME</label>
+          <input type="text" id="modalTargetInput" class="text-input" placeholder="e.g. Kofi, Sarah, John">
+          <p class="help-hint">The class name label you used during model training.</p>
+        </div>
+      </div>
+
+      <!-- API Key Field (Always present) -->
       <div class="input-field-group">
         <label class="input-field-label" for="modalApiKeyInput">PLATFORM API KEY (BEARER TOKEN)</label>
         <div class="input-wrapper">
@@ -1591,14 +1622,16 @@
           </button>
         </div>
         <p class="help-hint">
-          Your key is stored securely in your browser's local storage and passed directly to your dedicated Cloud Run endpoint. 
-          Get your key from <a href="https://platform.ultralytics.com" target="_blank" rel="noopener">Ultralytics Platform &rarr; API Keys</a>.
+          Saved locally in your browser. Get your key from <a href="https://platform.ultralytics.com" target="_blank" rel="noopener">Ultralytics Platform &rarr; API Keys</a>.
         </p>
       </div>
 
-      <div class="modal-actions">
-        <button class="btn-secondary" onclick="closeKeyModal()">CANCEL</button>
-        <button class="btn-scan-main" style="width: auto; padding: 8px 20px;" onclick="saveApiKey()">SAVE KEY</button>
+      <div class="modal-actions" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+        <button class="btn-secondary" type="button" onclick="resetToCalebDefault()" style="font-size: 0.74rem;">RESET TO DEFAULT</button>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn-secondary" type="button" onclick="closeKeyModal()">CANCEL</button>
+          <button class="btn-scan-main" type="button" style="width: auto; padding: 8px 18px;" onclick="saveApiKey()">SAVE SETTINGS</button>
+        </div>
       </div>
     </div>
   </div>
@@ -1647,20 +1680,56 @@
       initDragAndDrop();
     });
 
-    // API Key Management
+    // API Key & Model Configuration Management
+    let currentModalMode = 'default';
+
+    function setModalMode(mode) {
+      currentModalMode = mode;
+      const tabDef = document.getElementById('modalTabDefault');
+      const tabCust = document.getElementById('modalTabCustom');
+      const notice = document.getElementById('defaultModelNotice');
+      const group = document.getElementById('customModelGroup');
+
+      if (mode === 'default') {
+        tabDef.classList.add('active');
+        tabCust.classList.remove('active');
+        notice.style.display = 'block';
+        group.style.display = 'none';
+      } else {
+        tabCust.classList.add('active');
+        tabDef.classList.remove('active');
+        notice.style.display = 'none';
+        group.style.display = 'flex';
+      }
+    }
+
     function initApiKey() {
       const storedKey = localStorage.getItem('neuraface_api_key');
+      const storedEndpoint = localStorage.getItem('neuraface_endpoint_url');
+      const storedTarget = localStorage.getItem('neuraface_target_name');
+      const storedMode = localStorage.getItem('neuraface_mode') || 'default';
+
       const btn = document.getElementById('btnOpenKeyModal');
       const btnText = document.getElementById('apiKeyBtnText');
+
       if (storedKey && storedKey.trim().length > 5) {
         btn.classList.add('configured');
         const masked = storedKey.slice(0, 5) + '••••' + storedKey.slice(-3);
-        btnText.textContent = `KEY: ${masked}`;
+        btnText.textContent = storedMode === 'custom' ? `KEY: ${masked} [CUSTOM]` : `KEY: ${masked}`;
         document.getElementById('modalApiKeyInput').value = storedKey;
       } else {
         btn.classList.remove('configured');
         btnText.textContent = 'SET API KEY';
       }
+
+      if (storedEndpoint) {
+        document.getElementById('modalEndpointInput').value = storedEndpoint;
+      }
+      if (storedTarget) {
+        document.getElementById('modalTargetInput').value = storedTarget;
+      }
+
+      setModalMode(storedMode);
     }
 
     function openKeyModal() {
@@ -1673,17 +1742,49 @@
     }
 
     function saveApiKey() {
-      const input = document.getElementById('modalApiKeyInput');
-      const key = input.value.trim();
+      const keyInput = document.getElementById('modalApiKeyInput');
+      const endpointInput = document.getElementById('modalEndpointInput');
+      const targetInput = document.getElementById('modalTargetInput');
+
+      const key = keyInput.value.trim();
       if (!key) {
         localStorage.removeItem('neuraface_api_key');
         showToast('API Key removed', 'error');
       } else {
         localStorage.setItem('neuraface_api_key', key);
-        showToast('API Key saved successfully', 'success');
       }
+
+      if (currentModalMode === 'custom') {
+        const ep = endpointInput.value.trim();
+        const tgt = targetInput.value.trim();
+        if (ep) localStorage.setItem('neuraface_endpoint_url', ep);
+        else localStorage.removeItem('neuraface_endpoint_url');
+        if (tgt) localStorage.setItem('neuraface_target_name', tgt);
+        else localStorage.removeItem('neuraface_target_name');
+        localStorage.setItem('neuraface_mode', 'custom');
+        showToast('Custom model configuration saved', 'success');
+      } else {
+        localStorage.removeItem('neuraface_endpoint_url');
+        localStorage.removeItem('neuraface_target_name');
+        localStorage.setItem('neuraface_mode', 'default');
+        showToast('Default Caleb AI model saved', 'success');
+      }
+
       initApiKey();
       closeKeyModal();
+      checkEndpointStatus();
+    }
+
+    function resetToCalebDefault() {
+      localStorage.removeItem('neuraface_endpoint_url');
+      localStorage.removeItem('neuraface_target_name');
+      localStorage.setItem('neuraface_mode', 'default');
+      document.getElementById('modalEndpointInput').value = '';
+      document.getElementById('modalTargetInput').value = '';
+      setModalMode('default');
+      initApiKey();
+      checkEndpointStatus();
+      showToast('Reset to Caleb AI default settings', 'success');
     }
 
     function togglePasswordVisibility() {
@@ -1702,8 +1803,10 @@
       const led = document.getElementById('statusLed');
       const label = document.getElementById('statusLabel');
       label.textContent = 'PINGING...';
+      const customEp = localStorage.getItem('neuraface_endpoint_url');
+      const url = customEp ? `/api/status?endpoint=${encodeURIComponent(customEp)}` : '/api/status';
       try {
-        const res = await fetch('/api/status');
+        const res = await fetch(url);
         const data = await res.json();
         if (data.online) {
           led.className = 'status-led online';
@@ -1915,6 +2018,11 @@
       formData.append('conf', (parseFloat(document.getElementById('confSlider').value) / 100).toFixed(2));
       formData.append('iou', (parseFloat(document.getElementById('iouSlider').value) / 100).toFixed(2));
 
+      const customEp = localStorage.getItem('neuraface_endpoint_url');
+      const customTgt = localStorage.getItem('neuraface_target_name');
+      if (customEp) formData.append('endpoint_url', customEp);
+      if (customTgt) formData.append('target_name', customTgt);
+
       try {
         const response = await fetch('/api/predict', {
           method: 'POST',
@@ -1966,9 +2074,10 @@
       const bannerBadge = document.getElementById('bannerBadge');
       const bannerIcon = document.getElementById('bannerIcon');
 
+      const targetName = data.target_name || 'Caleb';
       if (data.caleb_verified) {
         banner.className = 'status-banner verified';
-        bannerTitle.textContent = 'POSITIVE MATCH: CALEB VERIFIED';
+        bannerTitle.textContent = `POSITIVE MATCH: ${targetName.toUpperCase()} VERIFIED`;
         bannerSub.textContent = `TARGET IDENTITY RECOGNIZED WITH ${data.max_confidence}% CONFIDENCE`;
         bannerBadge.textContent = 'VERIFIED';
         bannerIcon.innerHTML = `
@@ -1980,7 +2089,7 @@
       } else if (data.total_faces > 0) {
         banner.className = 'status-banner unverified';
         bannerTitle.textContent = 'UNVERIFIED IDENTITY DETECTED';
-        bannerSub.textContent = `${data.total_faces} FACE(S) DETECTED — TARGET "CALEB" NOT IDENTIFIED`;
+        bannerSub.textContent = `${data.total_faces} FACE(S) DETECTED — TARGET "${targetName.toUpperCase()}" NOT IDENTIFIED`;
         bannerBadge.textContent = 'UNVERIFIED';
         bannerIcon.innerHTML = `
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -2001,6 +2110,11 @@
       const kpiCaleb = document.getElementById('kpiCaleb');
       kpiCaleb.textContent = data.caleb_verified ? 'POSITIVE' : 'NEGATIVE';
       kpiCaleb.className = data.caleb_verified ? 'kpi-value teal' : 'kpi-value';
+      const kpiCard = kpiCaleb.parentElement;
+      if (kpiCard) {
+        const titleSpan = kpiCard.querySelector('.kpi-title');
+        if (titleSpan) titleSpan.textContent = `${targetName.toUpperCase()} MATCH`;
+      }
 
       document.getElementById('kpiLatency').textContent = `${data.cloud_latency_ms} ms`;
       document.getElementById('kpiConfidence').textContent = data.total_faces > 0 ? `${data.max_confidence}%` : '--';

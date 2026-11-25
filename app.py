@@ -18,10 +18,11 @@ ROOT_ENDPOINT = "https://predict-6afb3d9aba07484915b0492b-dproatj77a-nw.a.run.ap
 TARGET_IDENTITY = "Caleb"
 
 
-def call_ultralytics_cloud(image_bytes: bytes, filename: str, api_key: str, conf: float = 0.25, iou: float = 0.45):
+def call_ultralytics_cloud(image_bytes: bytes, filename: str, api_key: str, conf: float = 0.25, iou: float = 0.45, endpoint_url: str = DEFAULT_ENDPOINT):
     """
     Sends image bytes to Ultralytics Dedicated Cloud Run Endpoint with multipart/form-data.
     Uses standard library urllib so there are zero third-party networking issues.
+    Supports either the default Caleb endpoint or a custom classmate endpoint.
     """
     boundary = '----WebKitFormBoundary' + hex(int(time.time() * 1000))[2:]
     
@@ -66,7 +67,7 @@ def call_ultralytics_cloud(image_bytes: bytes, filename: str, api_key: str, conf
             clean_key = f'Bearer {clean_key}'
         headers['Authorization'] = clean_key
         
-    req = urllib.request.Request(DEFAULT_ENDPOINT, data=body, headers=headers, method='POST')
+    req = urllib.request.Request(endpoint_url, data=body, headers=headers, method='POST')
     
     t0 = time.time()
     try:
@@ -88,7 +89,7 @@ def call_ultralytics_cloud(image_bytes: bytes, filename: str, api_key: str, conf
         return False, str(e), elapsed_ms, 500
 
 
-def create_biometric_overlay(pil_img: Image.Image, detections: list):
+def create_biometric_overlay(pil_img: Image.Image, detections: list, target_identity: str = TARGET_IDENTITY):
     """
     Draws high-tech cyan/teal biometric reticles and identity labels on the image.
     Face area remains 100% visible and un-obscured (NO solid fills over faces).
@@ -124,7 +125,7 @@ def create_biometric_overlay(pil_img: Image.Image, detections: list):
             
         conf = float(det.get('confidence', 0))
         name = str(det.get('name', 'Face')).strip()
-        is_target = TARGET_IDENTITY.lower() in name.lower()
+        is_target = target_identity.lower() in name.lower()
         
         # Color definitions: Laser Cyan & Electric Teal
         primary_color = (6, 182, 212) if is_target else (45, 212, 191)
@@ -235,9 +236,22 @@ def index():
 @app.route('/api/status', methods=['GET'])
 def get_status():
     """Pings the Cloud Run health endpoint to verify connectivity."""
+    custom_endpoint = request.args.get('endpoint', '').strip()
+    if custom_endpoint:
+        if custom_endpoint.endswith('/predict'):
+            health_url = custom_endpoint[:-8] + '/health'
+        elif custom_endpoint.endswith('/'):
+            health_url = custom_endpoint + 'health'
+        else:
+            health_url = custom_endpoint + '/health'
+        endpoint_display = custom_endpoint
+    else:
+        health_url = HEALTH_ENDPOINT
+        endpoint_display = DEFAULT_ENDPOINT
+
     t0 = time.time()
     try:
-        req = urllib.request.Request(HEALTH_ENDPOINT, headers={'User-Agent': 'NeuraFace-Client/1.0'})
+        req = urllib.request.Request(health_url, headers={'User-Agent': 'NeuraFace-Client/1.0'})
         with urllib.request.urlopen(req, timeout=12) as resp:
             data = json.loads(resp.read().decode('utf-8'))
             ms = round((time.time() - t0) * 1000, 1)
@@ -245,8 +259,8 @@ def get_status():
                 'online': True,
                 'status': data.get('status', 'healthy'),
                 'latency_ms': ms,
-                'endpoint': DEFAULT_ENDPOINT,
-                'message': 'Ultralytics Dedicated Cloud Run is live and healthy'
+                'endpoint': endpoint_display,
+                'message': 'Cloud Run endpoint is live and healthy'
             })
     except Exception as e:
         ms = round((time.time() - t0) * 1000, 1)
@@ -254,7 +268,7 @@ def get_status():
             'online': False,
             'status': 'offline',
             'latency_ms': ms,
-            'endpoint': DEFAULT_ENDPOINT,
+            'endpoint': endpoint_display,
             'error': str(e)
         }), 502
 
@@ -263,8 +277,8 @@ def get_status():
 def predict():
     """
     Receives image from frontend (file upload or base64 webcam snapshot),
-    forwards it to Ultralytics Dedicated Endpoint, parses detections,
-    generates annotated biometrics and crops, and returns complete payload.
+    forwards it to Ultralytics Dedicated Endpoint (Default Caleb or Custom Classmate),
+    parses detections, generates annotated biometrics and crops, and returns complete payload.
     """
     # 1. Extract API Key (from header, form, or env var)
     api_key = request.headers.get('X-API-Key') or request.form.get('api_key') or os.environ.get('ULTRALYTICS_API_KEY', '')
@@ -278,7 +292,16 @@ def predict():
             'message': 'Please enter your Ultralytics Platform API Key (ul_xxx) in the top settings bar to run inference.'
         }), 401
 
-    # 2. Extract Confidence and IoU parameters
+    # 2. Extract Target Identity & Endpoint (supports custom classmate model or default Caleb)
+    target_name = (request.form.get('target_name') or TARGET_IDENTITY).strip()
+    if not target_name:
+        target_name = TARGET_IDENTITY
+
+    endpoint_url = (request.form.get('endpoint_url') or DEFAULT_ENDPOINT).strip()
+    if not endpoint_url:
+        endpoint_url = DEFAULT_ENDPOINT
+
+    # 3. Extract Confidence and IoU parameters
     try:
         conf = float(request.form.get('conf', 0.25))
     except (ValueError, TypeError):
@@ -289,7 +312,7 @@ def predict():
     except (ValueError, TypeError):
         iou = 0.45
 
-    # 3. Extract Image (either multipart file or base64 data)
+    # 4. Extract Image (either multipart file or base64 data)
     image_bytes = None
     filename = "upload.jpg"
     
@@ -298,7 +321,6 @@ def predict():
         filename = uploaded_file.filename
         image_bytes = uploaded_file.read()
     elif 'image_b64' in request.form and request.form['image_b64']:
-        # Data URL format: data:image/jpeg;base64,...
         b64_str = request.form['image_b64']
         if ',' in b64_str:
             b64_str = b64_str.split(',', 1)[1]
@@ -311,26 +333,26 @@ def predict():
     if not image_bytes:
         return jsonify({'success': False, 'error': 'No image provided. Please upload a photo or capture via webcam.'}), 400
 
-    # 4. Load and validate image locally with Pillow
+    # 5. Load and validate image locally with Pillow
     try:
         pil_img = Image.open(io.BytesIO(image_bytes))
         pil_img = pil_img.convert("RGB")
         orig_w, orig_h = pil_img.size
         
-        # Prepare original as base64 for side-by-side inspection
         orig_io = io.BytesIO()
         pil_img.save(orig_io, format='JPEG', quality=88)
         orig_b64 = "data:image/jpeg;base64," + base64.b64encode(orig_io.getvalue()).decode('utf-8')
     except Exception as e:
         return jsonify({'success': False, 'error': f'Invalid image format: {str(e)}'}), 400
 
-    # 5. Call Ultralytics Cloud Run Endpoint
+    # 6. Call Ultralytics Cloud Run Endpoint
     ok, result_data, elapsed_ms, status_code = call_ultralytics_cloud(
         image_bytes=image_bytes,
         filename=filename,
         api_key=api_key,
         conf=conf,
-        iou=iou
+        iou=iou,
+        endpoint_url=endpoint_url
     )
     
     if not ok:
@@ -348,7 +370,7 @@ def predict():
             'message': str(result_data)
         }), status_code
 
-    # 6. Parse Ultralytics Prediction Response
+    # 7. Parse Ultralytics Prediction Response
     detections = []
     try:
         images_arr = result_data.get('images', [])
@@ -366,19 +388,19 @@ def predict():
         if c >= conf:
             valid_detections.append(d)
 
-    # 7. Render Biometric Overlay & Extracted Face Crops
-    annotated_b64, face_crops = create_biometric_overlay(pil_img, valid_detections)
+    # 8. Render Biometric Overlay & Extracted Face Crops with target identity
+    annotated_b64, face_crops = create_biometric_overlay(pil_img, valid_detections, target_identity=target_name)
     
-    # 8. Check if Caleb is identified
-    caleb_detected = any(c['is_caleb'] for c in face_crops)
+    # 9. Check if target is identified
+    target_verified = any(c['is_caleb'] for c in face_crops)
     highest_conf = max([c['confidence_pct'] for c in face_crops], default=0.0)
 
     return jsonify({
         'success': True,
         'cloud_latency_ms': elapsed_ms,
         'total_faces': len(face_crops),
-        'caleb_verified': caleb_detected,
-        'target_name': TARGET_IDENTITY,
+        'caleb_verified': target_verified,
+        'target_name': target_name,
         'max_confidence': highest_conf,
         'image_dimensions': {'width': orig_w, 'height': orig_h},
         'original_image': orig_b64,
@@ -391,7 +413,7 @@ def predict():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print(f"==================================================")
-    print(f" NeuraFace AI Engine — Caleb Biometric System")
+    print(f" NeuraFace AI Engine — Biometric System")
     print(f" Running at: http://127.0.0.1:{port}")
     print(f"==================================================")
     app.run(host='0.0.0.0', port=port, debug=True)
